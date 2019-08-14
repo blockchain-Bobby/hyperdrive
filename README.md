@@ -1,9 +1,12 @@
 # Hyperdrive
 
+#### *Note*: This is a prerelease version of Hyperdrive that's backed by [Hypertrie](https://github.com/mafintosh/hypertrie)
+#### This version is not yet API-complete.
+
 Hyperdrive is a secure, real time distributed file system
 
 ``` js
-npm install hyperdrive
+npm install hyperdrive@prerelease
 ```
 
 [![Build Status](https://travis-ci.org/mafintosh/hyperdrive.svg?branch=master)](https://travis-ci.org/mafintosh/hyperdrive)
@@ -80,7 +83,7 @@ Options include:
   sparseMetadata: true // only download data on metadata feed when requested
   metadataStorageCacheSize: 65536 // how many entries to use in the metadata hypercore's LRU cache
   contentStorageCacheSize: 65536 // how many entries to use in the content hypercore's LRU cache
-  treeCacheSize: 65536 // how many entries to use in the append-tree's LRU cache
+  extensions: [], // The list of extension message types to use
 }
 ```
 
@@ -114,6 +117,10 @@ A key derived from the public key that can be used to discovery other peers shar
 
 A boolean indicating whether the archive is writable.
 
+#### `archive.peers`
+
+A list of peers currently replicating with this archive
+
 #### `archive.on('ready')`
 
 Emitted when the archive is fully ready and all properties has been populated.
@@ -121,6 +128,44 @@ Emitted when the archive is fully ready and all properties has been populated.
 #### `archive.on('error', err)`
 
 Emitted when a critical error during load happened.
+
+#### `archive.on('update')`
+
+Emitted when there is a new update to the archive.
+
+#### `archive.on('extension', name, message, peer)`
+
+Emitted when a peer has sent you an extension message. The `name` is a string from one of the extension types in the constructor, `message` is a buffer containing the message contents, and `peer` is a reference to the peer that sent the extension. You can send an extension back with `peer.extension(name, message)`.
+
+#### `archive.on('peer-add', peer)`
+
+Emitted when a new peer has been added.
+
+```js
+const archive = Hyperdrive({
+  extension: ['example']
+})
+
+archive.on('extension', (name, message, peer) => {
+  console.log(name, message.toString('utf8'))
+})
+
+archive.on('peer-add', (peer) => {
+  peer.extension('example', Buffer.from('Hello World!', 'utf8'))
+})
+```
+
+#### `archive.on('peer-remove', peer)`
+
+Emitted when a peer has been removed.
+
+#### `archive.on('close')`
+
+Emitted when the archive has been closed.
+
+#### `archive.extension(name, message)`
+
+Broadcasts an extension message to all connected peers. The `name` must be a string for an extension passed in the constructor and the message must be a buffer.
 
 #### `var oldDrive = archive.checkout(version, [opts])`
 
@@ -144,10 +189,6 @@ You can use this with `.checkout(version)` to download a specific version of the
 ``` js
 archive.checkout(version).download()
 ```
-
-#### `var stream = archive.history([options])`
-
-Get a stream of all changes and their versions from this archive.
 
 #### `var stream = archive.createReadStream(name, [options])`
 
@@ -180,24 +221,11 @@ or a string can be passed as options to simply set the encoding - similar to fs.
 
 If `cached` is set to `true`, this function returns results only if they have already been downloaded.
 
-#### `var stream = archive.createDiffStream(version, [options])`
-
-Diff this archive with another version. `version` can both be a version number of a checkout instance of the archive. The `data` objects looks like this
-
-``` js
-{
-  type: 'put' | 'del',
-  name: '/some/path/name.txt',
-  value: {
-    // the stat object
-  }
-}
-```
-
 #### `var stream = archive.createWriteStream(name, [options])`
 
 Write a file as a stream. Similar to fs.createWriteStream.
 If `options.cached` is set to `true`, this function returns results only if they have already been downloaded.
+`options.metadata` is optionally an object with string keys and buffer objects to set metadata on the file entry.
 
 #### `archive.writeFile(name, buffer, [options], [callback])`
 
@@ -252,6 +280,8 @@ Stat {
   linkname: undefined }
 ```
 
+The stat may include a metadata object (string keys, buffer values) with metadata that was passed into `writeFile` or `createWriteStream`.
+
 The output object includes methods similar to fs.stat:
 
 ``` js
@@ -263,12 +293,9 @@ stat.isFile()
 Options include:
 ```js
 {
-  cached: true|false // default: false,
   wait: true|false // default: true
 }
 ```
-
-If `cached` is set to `true`, this function returns results only if they have already been downloaded.
 
 If `wait` is set to `true`, this function will wait for data to be downloaded. If false, will return an error.
 
@@ -279,12 +306,9 @@ Stat an entry but do not follow symlinks. Similar to fs.lstat.
 Options include:
 ```js
 {
-  cached: true|false // default: false,
   wait: true|false // default: true
 }
 ```
-
-If `cached` is set to `true`, this function returns results only if they have already been downloaded.
 
 If `wait` is set to `true`, this function will wait for data to be downloaded. If false, will return an error.
 
@@ -295,16 +319,13 @@ Similar to fs.access.
 Options include:
 ```js
 {
-  cached: true|false // default: false,
   wait: true|false // default: true
 }
 ```
 
-If `cached` is set to `true`, this function returns results only if they have already been downloaded.
-
 If `wait` is set to `true`, this function will wait for data to be downloaded. If false, will return an error.
 
-#### `archive.open(name, flags, [mode], callback)`
+#### `archive.open(name, flags, callback)`
 
 Open a file and get a file descriptor back. Similar to fs.open.
 
@@ -313,6 +334,53 @@ Note that currently only read mode is supported in this API.
 #### `archive.read(fd, buf, offset, len, position, callback)`
 
 Read from a file descriptor into a buffer. Similar to fs.read.
+
+#### `archive.write(fd, buf, offset, len, pos, cb)`
+
+Write from a buffer into a file descriptor. Similar to fs.write.
+
+#### `archive.symlink(target, linkname, cb)`
+
+Create a symlink from `linkname` to `target`.
+
+#### `archive.mount(name, key, opts, cb)`
+
+Mounts another Hyperdrive at the specified mountpoint.
+
+If a `version` is specified in the options, then the mountpoint will reference a static checkout (it will never update).
+
+Options include:
+```js
+{
+  version: (drive version) // The drive version to checkout.
+}
+```
+
+#### `archive.unmount(name, cb)`
+
+Unmount a previously-mounted Hyperdrive.
+
+#### `archive.createMountStream(opts)`
+
+Create a stream containing content/metadata feeds for all mounted Hyperdrives. Each entry in the stream has the form:
+```js
+{
+  path: '/',                // The mountpoint
+  metadata: Hypercore(...), // The mounted metadata feed
+  content: Hypercore(...)   // The mounted content feed  
+}
+```
+
+#### `archive.getAllMounts(opts, cb)`
+
+Returns a Map of the content/metadata feeds for all mounted Hyperdrives, keyed by their mountpoints. The results will always include the top-level feeds (with key '/').
+
+Options include:
+```js
+{
+  memory: true|false // Only list drives currently cached in memory (default: false).
+}
+```
 
 #### `archive.close(fd, [callback])`
 
